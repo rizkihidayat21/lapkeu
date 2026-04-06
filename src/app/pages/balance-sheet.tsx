@@ -15,8 +15,8 @@ import { useFinance } from "../providers/finance-provider";
 
 export function BalanceSheet() {
   const { profile } = useAuth();
-  const { transactions } = useFinance();
-  const balanceSheetData = buildBalanceSheetData(transactions);
+  const { accounts, journalEntries } = useFinance();
+  const balanceSheetData = buildBalanceSheetData(accounts, journalEntries);
   const totalKewajibanModal = balanceSheetData.totalKewajiban + balanceSheetData.totalModal;
 
   const handlePrint = () => {
@@ -41,12 +41,25 @@ export function BalanceSheet() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="space-y-6 print-report-page">
+      <div className="print-only print-report-header">
+        <div className="print-report-title">Neraca</div>
+        <div className="print-report-subtitle">{profile?.company_name ?? ""}</div>
+        <div className="print-report-meta">
+          <div>
+            <span className="font-semibold">Tanggal Laporan:</span> {balanceSheetData.tanggal}
+          </div>
+          <div>
+            <span className="font-semibold">Tanggal Cetak:</span> {new Intl.DateTimeFormat("id-ID", { day: "2-digit", month: "long", year: "numeric" }).format(new Date())}
+          </div>
+        </div>
+      </div>
+
+      <div className="print-hidden flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Neraca</h1>
           <p className="text-gray-500 mt-1">
-            {profile?.company_name ?? "Usaha Anda"} - Per {balanceSheetData.tanggal}
+            {profile?.company_name ?? ""} Per {balanceSheetData.tanggal}
           </p>
         </div>
         <div className="flex w-full sm:w-auto gap-2 flex-col sm:flex-row">
@@ -61,8 +74,8 @@ export function BalanceSheet() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <Card className="border-blue-200 bg-blue-50">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 print-summary-grid">
+        <Card className="border-blue-200 bg-blue-50 print-summary-card">
           <CardHeader>
             <CardTitle className="text-blue-800">Total Aset</CardTitle>
           </CardHeader>
@@ -73,7 +86,7 @@ export function BalanceSheet() {
           </CardContent>
         </Card>
 
-        <Card className="border-orange-200 bg-orange-50">
+        <Card className="border-orange-200 bg-orange-50 print-summary-card">
           <CardHeader>
             <CardTitle className="text-orange-800">Total Kewajiban</CardTitle>
           </CardHeader>
@@ -84,7 +97,7 @@ export function BalanceSheet() {
           </CardContent>
         </Card>
 
-        <Card className="border-purple-200 bg-purple-50">
+        <Card className="border-purple-200 bg-purple-50 print-summary-card">
           <CardHeader>
             <CardTitle className="text-purple-800">Total Modal</CardTitle>
           </CardHeader>
@@ -97,12 +110,12 @@ export function BalanceSheet() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100">
+        <Card className="print-report-shell">
+          <CardHeader className="bg-gradient-to-r from-blue-50 to-blue-100 print-hidden">
             <CardTitle className="text-center text-blue-900">ASET</CardTitle>
           </CardHeader>
-          <CardContent className="p-0 overflow-x-auto">
-            <Table className="min-w-[540px]">
+          <CardContent className="p-0 overflow-x-auto print-table-wrap">
+            <Table className="min-w-[540px] print-no-min-width">
               <TableHeader>
                 <TableRow>
                   <TableHead>Keterangan</TableHead>
@@ -134,12 +147,12 @@ export function BalanceSheet() {
           </CardContent>
         </Card>
 
-        <Card>
-          <CardHeader className="bg-gradient-to-r from-purple-50 to-purple-100">
+        <Card className="print-report-shell">
+          <CardHeader className="bg-gradient-to-r from-purple-50 to-purple-100 print-hidden">
             <CardTitle className="text-center text-purple-900">KEWAJIBAN & MODAL</CardTitle>
           </CardHeader>
-          <CardContent className="p-0 overflow-x-auto">
-            <Table className="min-w-[540px]">
+          <CardContent className="p-0 overflow-x-auto print-table-wrap">
+            <Table className="min-w-[540px] print-no-min-width">
               <TableHeader>
                 <TableRow>
                   <TableHead>Keterangan</TableHead>
@@ -215,7 +228,7 @@ export function BalanceSheet() {
         </Card>
       </div>
 
-      <Card className={balanceSheetData.totalAset === totalKewajibanModal ? "border-green-300 bg-green-50" : "border-red-300 bg-red-50"}>
+      <Card className={`print-hidden ${balanceSheetData.totalAset === totalKewajibanModal ? "border-green-300 bg-green-50" : "border-red-300 bg-red-50"}`}>
         <CardHeader>
           <CardTitle className={balanceSheetData.totalAset === totalKewajibanModal ? "text-green-800" : "text-red-800"}>
             Verifikasi Neraca
@@ -246,7 +259,7 @@ export function BalanceSheet() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="print-hidden">
         <CardHeader>
           <CardTitle>Rasio Keuangan</CardTitle>
         </CardHeader>
@@ -281,6 +294,10 @@ export function BalanceSheet() {
           </div>
         </CardContent>
       </Card>
+
+      <div className="print-only print-note">
+        Neraca ini menampilkan posisi aset, kewajiban, dan modal berdasarkan saldo akun pada tanggal laporan.
+      </div>
     </div>
   );
 }

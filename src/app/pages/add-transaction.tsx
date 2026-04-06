@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { ArrowLeft, Plus, Save, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Coins, Plus } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -16,37 +16,43 @@ import {
 } from "../components/ui/select";
 import {
   ASSET_CATEGORY_OPTIONS,
+  buildAssetJournalPayload,
+  buildExpenseJournalPayload,
+  buildIncomeJournalPayload,
+  buildOpeningBalanceJournalPayload,
   EXPENSE_CATEGORY_OPTIONS,
   FUNDING_SOURCE_OPTIONS,
   formatNumberInput,
-  parseCurrencyInput,
-  validateAssetPayload,
-  validateExpensePayload,
-  validateIncomePayload,
   getAssetCategoryLabel,
   getFundingSourceLabel,
+  parseCurrencyInput,
 } from "../../lib/finance";
 import { useFinance } from "../providers/finance-provider";
 
 export function AddTransaction() {
   const navigate = useNavigate();
-  const { createTransaction } = useFinance();
+  const { accounts, createJournalEntry } = useFinance();
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const today = new Date().toISOString().slice(0, 10);
 
   const [pendapatanKeterangan, setPendapatanKeterangan] = useState("");
   const [pendapatanJumlah, setPendapatanJumlah] = useState("");
-  const [pendapatanTanggal, setPendapatanTanggal] = useState("");
+  const [pendapatanTanggal, setPendapatanTanggal] = useState(today);
 
   const [bebanKategori, setBebanKategori] = useState("");
   const [bebanKeterangan, setBebanKeterangan] = useState("");
   const [bebanJumlah, setBebanJumlah] = useState("");
-  const [bebanTanggal, setBebanTanggal] = useState("");
+  const [bebanTanggal, setBebanTanggal] = useState(today);
 
   const [asetKategori, setAsetKategori] = useState("");
   const [asetNama, setAsetNama] = useState("");
   const [asetNilai, setAsetNilai] = useState("");
-  const [asetTanggal, setAsetTanggal] = useState("");
+  const [asetTanggal, setAsetTanggal] = useState(today);
   const [asetSumberPendanaan, setAsetSumberPendanaan] = useState("");
+
+  const [modalAwalKeterangan, setModalAwalKeterangan] = useState("Setoran modal awal");
+  const [modalAwalJumlah, setModalAwalJumlah] = useState("");
+  const [modalAwalTanggal, setModalAwalTanggal] = useState(today);
 
   const handleCurrencyInput = (value: string, setter: (val: string) => void) => {
     setter(value.replace(/\D/g, ""));
@@ -54,7 +60,7 @@ export function AddTransaction() {
 
   const handleSubmitPendapatan = async (e: React.FormEvent) => {
     e.preventDefault();
-    const result = validateIncomePayload({
+    const result = buildIncomeJournalPayload(accounts, {
       description: pendapatanKeterangan,
       amount: parseCurrencyInput(pendapatanJumlah),
       transactionDate: pendapatanTanggal,
@@ -67,11 +73,11 @@ export function AddTransaction() {
 
     setIsSubmitting(true);
     try {
-      await createTransaction(result.value);
+      await createJournalEntry(result.value);
       toast.success("Pendapatan berhasil disimpan ke Supabase.");
       setPendapatanKeterangan("");
       setPendapatanJumlah("");
-      setPendapatanTanggal("");
+      setPendapatanTanggal(today);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Gagal menyimpan pendapatan.");
     } finally {
@@ -81,7 +87,7 @@ export function AddTransaction() {
 
   const handleSubmitBeban = async (e: React.FormEvent) => {
     e.preventDefault();
-    const result = validateExpensePayload({
+    const result = buildExpenseJournalPayload(accounts, {
       category: bebanKategori,
       description: bebanKeterangan,
       amount: parseCurrencyInput(bebanJumlah),
@@ -95,12 +101,12 @@ export function AddTransaction() {
 
     setIsSubmitting(true);
     try {
-      await createTransaction(result.value);
+      await createJournalEntry(result.value);
       toast.success("Beban berhasil disimpan ke Supabase.");
       setBebanKategori("");
       setBebanKeterangan("");
       setBebanJumlah("");
-      setBebanTanggal("");
+      setBebanTanggal(today);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Gagal menyimpan beban.");
     } finally {
@@ -110,7 +116,7 @@ export function AddTransaction() {
 
   const handleSubmitAset = async (e: React.FormEvent) => {
     e.preventDefault();
-    const result = validateAssetPayload({
+    const result = buildAssetJournalPayload(accounts, {
       category: asetKategori,
       name: asetNama,
       amount: parseCurrencyInput(asetNilai),
@@ -125,15 +131,42 @@ export function AddTransaction() {
 
     setIsSubmitting(true);
     try {
-      await createTransaction(result.value);
+      await createJournalEntry(result.value);
       toast.success("Aset berhasil disimpan ke Supabase.");
       setAsetKategori("");
       setAsetNama("");
       setAsetNilai("");
-      setAsetTanggal("");
+      setAsetTanggal(today);
       setAsetSumberPendanaan("");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Gagal menyimpan aset.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleSubmitModalAwal = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const result = buildOpeningBalanceJournalPayload(accounts, {
+      description: modalAwalKeterangan,
+      amount: parseCurrencyInput(modalAwalJumlah),
+      transactionDate: modalAwalTanggal,
+    });
+
+    if (!result.ok) {
+      toast.error(result.error);
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      await createJournalEntry(result.value);
+      toast.success("Modal awal berhasil disimpan.");
+      setModalAwalKeterangan("Setoran modal awal");
+      setModalAwalJumlah("");
+      setModalAwalTanggal(today);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Gagal menyimpan modal awal.");
     } finally {
       setIsSubmitting(false);
     }
@@ -159,10 +192,11 @@ export function AddTransaction() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="pendapatan">
-            <TabsList className="grid w-full grid-cols-3 h-auto">
+            <TabsList className="grid w-full grid-cols-2 md:grid-cols-4 h-auto">
               <TabsTrigger value="pendapatan">Pendapatan</TabsTrigger>
               <TabsTrigger value="beban">Beban</TabsTrigger>
               <TabsTrigger value="aset">Aset</TabsTrigger>
+              <TabsTrigger value="modal-awal">Modal Awal</TabsTrigger>
             </TabsList>
 
             <TabsContent value="pendapatan" className="space-y-4">
@@ -350,41 +384,71 @@ export function AddTransaction() {
                 </Button>
               </form>
             </TabsContent>
+
+            <TabsContent value="modal-awal" className="space-y-4">
+              <form onSubmit={handleSubmitModalAwal} className="space-y-4">
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-900">
+                  Tab ini untuk input cepat saldo/modal awal agar laporan neraca, arus kas, dan dashboard
+                  langsung punya basis kas seperti UI demo sebelumnya.
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="modal-awal-tanggal">Tanggal</Label>
+                  <Input
+                    id="modal-awal-tanggal"
+                    type="date"
+                    value={modalAwalTanggal}
+                    onChange={(e) => setModalAwalTanggal(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="modal-awal-keterangan">Keterangan</Label>
+                  <Input
+                    id="modal-awal-keterangan"
+                    type="text"
+                    placeholder="Contoh: Setoran modal awal"
+                    value={modalAwalKeterangan}
+                    onChange={(e) => setModalAwalKeterangan(e.target.value)}
+                    required
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="modal-awal-jumlah">Jumlah Modal / Kas (Rp)</Label>
+                  <Input
+                    id="modal-awal-jumlah"
+                    type="text"
+                    placeholder="0"
+                    value={formatNumberInput(modalAwalJumlah)}
+                    onChange={(e) => handleCurrencyInput(e.target.value, setModalAwalJumlah)}
+                    required
+                  />
+                </div>
+
+                <Button type="submit" className="w-full" disabled={isSubmitting}>
+                  <Coins className="w-4 h-4 mr-2" />
+                  {isSubmitting ? "Menyimpan..." : "Simpan Modal Awal"}
+                </Button>
+              </form>
+            </TabsContent>
           </Tabs>
         </CardContent>
       </Card>
 
-      <Card className="bg-cyan-50 border-cyan-200">
+      <Card className="bg-blue-50 border-blue-200">
         <CardContent className="pt-6">
-          <div className="flex items-start gap-3">
-            <div className="flex-shrink-0 w-10 h-10 bg-cyan-100 rounded-full flex items-center justify-center">
-              <ShieldCheck className="w-5 h-5 text-cyan-700" />
-            </div>
-            <div className="flex-1">
-              <h3 className="font-semibold text-cyan-900 mb-1">Keamanan & Validasi</h3>
-              <ul className="text-sm text-cyan-800 space-y-1 list-disc list-inside">
-                <li>Row Level Security memastikan user hanya bisa membaca datanya sendiri</li>
-                <li>Nominal, tanggal, dan bentuk transaksi divalidasi di frontend dan database</li>
-                <li>Transaksi aset memerlukan sumber pendanaan agar neraca tetap seimbang</li>
-              </ul>
-            </div>
+          <div className="space-y-2 text-sm text-blue-900">
+            <h3 className="font-semibold">Cara mengisi agar laporan ter-update</h3>
+            <p><strong>Laba Rugi</strong> bertambah dari input <strong>Pendapatan</strong> dan <strong>Beban</strong>.</p>
+            <p><strong>Arus Kas</strong> berubah dari Pendapatan, Beban, dan transaksi Aset yang memakai kas.</p>
+            <p><strong>Neraca</strong> berubah dari Aset, Modal Awal, serta akumulasi laba/rugi.</p>
+            <p>Kalau ingin tampilan awal seperti UI demo, isi dulu tab <strong>Modal Awal</strong>, lalu tambah pendapatan dan beban.</p>
           </div>
         </CardContent>
       </Card>
 
-      <Card className="bg-slate-50 border-slate-200">
-        <CardContent className="pt-6">
-          <div className="flex items-start gap-3">
-            <div className="flex-shrink-0 w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center">
-              <Save className="w-5 h-5 text-slate-700" />
-            </div>
-            <div className="flex-1 text-sm text-slate-700 space-y-1">
-              <p>Data tersimpan di tabel <code>financial_transactions</code> pada Supabase.</p>
-              <p>Tambahkan transaksi kas dari modal atau utang lewat tab aset kategori <code>Kas</code> bila perlu.</p>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 }

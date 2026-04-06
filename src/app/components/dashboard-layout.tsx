@@ -71,7 +71,7 @@ export function DashboardLayout() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="lg:hidden fixed top-4 left-4 z-50">
+      <div className="lg:hidden fixed top-4 left-4 z-50 print-hidden">
         <Button
           variant="outline"
           size="icon"
@@ -83,7 +83,7 @@ export function DashboardLayout() {
       </div>
 
       <aside
-        className={`fixed top-0 left-0 h-full w-72 bg-gradient-to-b from-slate-950 via-blue-950 to-cyan-950 text-white transform transition-transform duration-300 z-40 ${
+        className={`fixed top-0 left-0 h-full w-72 bg-gradient-to-b from-slate-950 via-blue-950 to-cyan-950 text-white transform transition-transform duration-300 z-40 print-hidden ${
           isSidebarOpen ? "translate-x-0" : "-translate-x-full"
         } lg:translate-x-0`}
       >
@@ -93,7 +93,7 @@ export function DashboardLayout() {
               <Building2 className="w-6 h-6 text-blue-900" />
             </div>
             <div className="min-w-0">
-              <div className="font-semibold text-lg truncate">{profile?.company_name ?? "Usaha Anda"}</div>
+              <div className="font-semibold text-lg truncate">{profile?.company_name ?? ""}</div>
               <div className="text-xs text-blue-200">Terhubung ke Supabase</div>
             </div>
           </div>
@@ -141,13 +141,13 @@ export function DashboardLayout() {
 
       {isSidebarOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-30 lg:hidden"
+          className="fixed inset-0 bg-black/50 z-30 lg:hidden print-hidden"
           onClick={() => setIsSidebarOpen(false)}
         />
       )}
 
-      <main className="lg:ml-72 min-h-screen">
-        <div className="px-4 pb-6 pt-20 sm:px-6 sm:pt-24 lg:p-8 lg:pt-8">
+      <main className="lg:ml-72 min-h-screen print-main-shell">
+        <div className="px-4 pb-6 pt-20 sm:px-6 sm:pt-24 lg:p-8 lg:pt-8 print-main-content">
           <Outlet />
         </div>
       </main>

@@ -6,63 +6,147 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { supabase, type FinancialTransactionInsert, type FinancialTransactionRow } from "../../lib/supabase";
+import {
+  supabase,
+  type AccountRow,
+  type FinancialTransactionRow,
+  type JournalEntryRow,
+  type JournalLineInput,
+  type JournalSource,
+} from "../../lib/supabase";
 import { useAuth } from "./auth-provider";
+import { buildLegacyJournalPayload } from "../../lib/finance";
+
+interface CreateJournalEntryInput {
+  entryDate: string;
+  description: string;
+  source: JournalSource;
+  lines: JournalLineInput[];
+}
 
 interface FinanceContextValue {
-  transactions: FinancialTransactionRow[];
+  accounts: AccountRow[];
+  journalEntries: JournalEntryRow[];
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
-  createTransaction: (payload: FinancialTransactionInsert) => Promise<void>;
+  createJournalEntry: (payload: CreateJournalEntryInput) => Promise<void>;
+  deleteJournalEntry: (id: string) => Promise<void>;
 }
 
 const FinanceContext = createContext<FinanceContextValue | null>(null);
 
-function sortTransactions(items: FinancialTransactionRow[]) {
+function sortEntries(items: JournalEntryRow[]) {
   return [...items].sort((a, b) => {
-    if (a.transaction_date === b.transaction_date) {
+    if (a.entry_date === b.entry_date) {
       return b.created_at.localeCompare(a.created_at);
     }
-    return b.transaction_date.localeCompare(a.transaction_date);
+    return b.entry_date.localeCompare(a.entry_date);
   });
 }
 
 export function FinanceProvider({ children }: { children: ReactNode }) {
   const { user, isConfigured } = useAuth();
-  const [transactions, setTransactions] = useState<FinancialTransactionRow[]>([]);
+  const [accounts, setAccounts] = useState<AccountRow[]>([]);
+  const [journalEntries, setJournalEntries] = useState<JournalEntryRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function refresh() {
     if (!supabase || !user) {
-      setTransactions([]);
+      setAccounts([]);
+      setJournalEntries([]);
       return;
     }
 
     setIsLoading(true);
     setError(null);
 
-    const { data, error: queryError } = await supabase
-      .from("financial_transactions")
-      .select("*")
-      .order("transaction_date", { ascending: false })
-      .order("created_at", { ascending: false });
-
-    if (queryError) {
-      setError(queryError.message);
-      setTransactions([]);
+    const { error: ensureError } = await supabase.rpc("ensure_default_accounts");
+    if (ensureError) {
+      setError(ensureError.message);
       setIsLoading(false);
       return;
     }
 
-    setTransactions(sortTransactions((data ?? []) as FinancialTransactionRow[]));
+    const [
+      { data: accountsData, error: accountsError },
+      { data: entriesData, error: entriesError },
+      { data: legacyTransactions, error: legacyError },
+    ] =
+      await Promise.all([
+        supabase.from("accounts").select("*").order("code", { ascending: true }),
+        supabase
+          .from("journal_entries")
+          .select("*, journal_entry_lines(*, accounts(*))")
+          .order("entry_date", { ascending: false })
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("financial_transactions")
+          .select("*")
+          .order("transaction_date", { ascending: false })
+          .order("created_at", { ascending: false }),
+      ]);
+
+    if (accountsError || entriesError || legacyError) {
+      setError(
+        accountsError?.message ??
+          entriesError?.message ??
+          legacyError?.message ??
+          "Gagal memuat data keuangan.",
+      );
+      setIsLoading(false);
+      return;
+    }
+
+    const nextAccounts = (accountsData ?? []) as AccountRow[];
+    let nextEntries = sortEntries((entriesData ?? []) as JournalEntryRow[]);
+
+    if (nextEntries.length === 0 && (legacyTransactions?.length ?? 0) > 0) {
+      for (const legacyTransaction of (legacyTransactions ?? []) as FinancialTransactionRow[]) {
+        const result = buildLegacyJournalPayload(nextAccounts, legacyTransaction);
+        if (!result.ok) {
+          continue;
+        }
+
+        const { error: rpcError } = await supabase.rpc("create_balanced_journal_entry", {
+          p_entry_date: result.value.entryDate,
+          p_description: result.value.description,
+          p_source: result.value.source,
+          p_lines: result.value.lines,
+        });
+
+        if (rpcError) {
+          setError(rpcError.message);
+          setIsLoading(false);
+          return;
+        }
+      }
+
+      const { data: backfilledEntries, error: backfillFetchError } = await supabase
+        .from("journal_entries")
+        .select("*, journal_entry_lines(*, accounts(*))")
+        .order("entry_date", { ascending: false })
+        .order("created_at", { ascending: false });
+
+      if (backfillFetchError) {
+        setError(backfillFetchError.message);
+        setIsLoading(false);
+        return;
+      }
+
+      nextEntries = sortEntries((backfilledEntries ?? []) as JournalEntryRow[]);
+    }
+
+    setAccounts(nextAccounts);
+    setJournalEntries(nextEntries);
     setIsLoading(false);
   }
 
   useEffect(() => {
     if (!isConfigured || !user) {
-      setTransactions([]);
+      setAccounts([]);
+      setJournalEntries([]);
       setIsLoading(false);
       return;
     }
@@ -70,33 +154,64 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     refresh();
   }, [isConfigured, user?.id]);
 
-  async function createTransaction(payload: FinancialTransactionInsert) {
+  async function createJournalEntry(payload: CreateJournalEntryInput) {
     if (!supabase || !user) {
       throw new Error("Supabase belum dikonfigurasi.");
     }
 
-    const { data, error: insertError } = await supabase
-      .from("financial_transactions")
-      .insert({ ...payload, user_id: user.id })
-      .select("*")
-      .single();
+    const { data, error: rpcError } = await supabase.rpc("create_balanced_journal_entry", {
+      p_entry_date: payload.entryDate,
+      p_description: payload.description,
+      p_source: payload.source,
+      p_lines: payload.lines,
+    });
 
-    if (insertError) {
-      throw new Error(insertError.message);
+    if (rpcError) {
+      throw new Error(rpcError.message);
     }
 
-    setTransactions((current) => sortTransactions([data as FinancialTransactionRow, ...current]));
+    const { data: insertedEntry, error: fetchError } = await supabase
+      .from("journal_entries")
+      .select("*, journal_entry_lines(*, accounts(*))")
+      .eq("id", data)
+      .single();
+
+    if (fetchError) {
+      throw new Error(fetchError.message);
+    }
+
+    setJournalEntries((current) => sortEntries([insertedEntry as JournalEntryRow, ...current]));
+  }
+
+  async function deleteJournalEntry(id: string) {
+    if (!supabase || !user) {
+      throw new Error("Supabase belum dikonfigurasi.");
+    }
+
+    const { error: deleteError } = await supabase
+      .from("journal_entries")
+      .delete()
+      .eq("id", id)
+      .eq("user_id", user.id);
+
+    if (deleteError) {
+      throw new Error(deleteError.message);
+    }
+
+    setJournalEntries((current) => current.filter((item) => item.id !== id));
   }
 
   const value = useMemo<FinanceContextValue>(
     () => ({
-      transactions,
+      accounts,
+      journalEntries,
       isLoading,
       error,
       refresh,
-      createTransaction,
+      createJournalEntry,
+      deleteJournalEntry,
     }),
-    [transactions, isLoading, error],
+    [accounts, journalEntries, isLoading, error],
   );
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>;

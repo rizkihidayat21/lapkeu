@@ -34,9 +34,9 @@ function calculateChange(current: number, previous: number) {
 }
 
 export function DashboardOverview() {
-  const { transactions, isLoading, error } = useFinance();
+  const { accounts, journalEntries, isLoading, error } = useFinance();
   const { currentLabel, monthlyData, expenseData, cashBalance, currentMonth, previousMonth } =
-    buildDashboardData(transactions);
+    buildDashboardData(accounts, journalEntries);
 
   const revenueChange = calculateChange(currentMonth.pendapatan, previousMonth.pendapatan);
   const profitChange = calculateChange(currentMonth.laba, previousMonth.laba);

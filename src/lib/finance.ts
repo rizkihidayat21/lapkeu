@@ -1,8 +1,11 @@
 import { endOfMonth, format, startOfMonth, subMonths } from "date-fns";
 import type {
+  AccountClass,
+  AccountRow,
   AssetFundingSource,
-  FinancialTransactionInsert,
   FinancialTransactionRow,
+  JournalEntryRow,
+  JournalLineInput,
 } from "./supabase";
 
 export const EXPENSE_CATEGORY_OPTIONS = [
@@ -34,17 +37,39 @@ type ValidationResult<T> =
   | { ok: true; value: T }
   | { ok: false; error: string };
 
+interface JournalPayload {
+  entryDate: string;
+  description: string;
+  source: "income" | "expense" | "asset" | "opening_balance";
+  lines: JournalLineInput[];
+}
+
 interface PeriodRange {
   start: Date;
   end: Date;
 }
 
-interface LineItem {
+interface TrialBalanceItem {
+  account: AccountRow;
+  balance: number;
+}
+
+interface ReportRow {
+  id: string;
+  description: string;
+  date: string;
+  amount: number;
+}
+
+interface CashFlowRow {
+  id: string;
   keterangan: string;
   jumlah: number;
+  klasifikasi: "operasi" | "investasi" | "pendanaan";
 }
 
 interface BalanceSection {
+  id: string;
   keterangan: string;
   jumlah: number;
 }
@@ -60,6 +85,25 @@ const assetCategoryMap = new Map(
 const fundingSourceMap = new Map(
   FUNDING_SOURCE_OPTIONS.map((item) => [item.value, item.label]),
 );
+
+const expenseAccountCodeMap = new Map<string, string>([
+  ["salary", "5010"],
+  ["rent", "5020"],
+  ["utilities", "5030"],
+  ["transport", "5040"],
+  ["supplies", "5050"],
+  ["marketing", "5060"],
+  ["other_expense", "5099"],
+]);
+
+const assetAccountCodeMap = new Map<string, string>([
+  ["cash", "1010"],
+  ["equipment", "1510"],
+  ["vehicle", "1520"],
+  ["receivable", "1110"],
+  ["inventory", "1530"],
+  ["other_asset", "1510"],
+]);
 
 const monthFormatter = new Intl.DateTimeFormat("id-ID", { month: "short" });
 const longMonthFormatter = new Intl.DateTimeFormat("id-ID", {
@@ -79,6 +123,14 @@ export function formatRupiah(value: number) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(value);
+}
+
+export function formatDisplayDate(value: string) {
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "numeric",
+    month: "numeric",
+    year: "numeric",
+  }).format(new Date(`${value}T00:00:00`));
 }
 
 export function formatNumberInput(value: string) {
@@ -139,11 +191,22 @@ function validateAmount(value: number, label: string) {
   return null;
 }
 
-export function validateIncomePayload(input: {
-  description: string;
-  amount: number;
-  transactionDate: string;
-}): ValidationResult<FinancialTransactionInsert> {
+function findAccountByCode(accounts: AccountRow[], code: string) {
+  const account = accounts.find((item) => item.code === code && item.is_active);
+  if (!account) {
+    throw new Error(`Akun ${code} belum tersedia. Jalankan ulang schema Supabase.`);
+  }
+  return account;
+}
+
+function buildLine(accountId: string, lineType: "debit" | "credit", amount: number, memo?: string) {
+  return { account_id: accountId, line_type: lineType, amount, memo };
+}
+
+export function buildIncomeJournalPayload(
+  accounts: AccountRow[],
+  input: { description: string; amount: number; transactionDate: string },
+): ValidationResult<JournalPayload> {
   const descriptionError = validateDescription(input.description, "Keterangan");
   if (descriptionError) {
     return { ok: false, error: descriptionError };
@@ -159,24 +222,27 @@ export function validateIncomePayload(input: {
     return { ok: false, error: amountError };
   }
 
+  const cash = findAccountByCode(accounts, "1010");
+  const revenue = findAccountByCode(accounts, "4010");
+
   return {
     ok: true,
     value: {
-      transaction_type: "income",
-      category: "service_revenue",
+      entryDate: input.transactionDate,
       description: normalizeText(input.description),
-      amount: input.amount,
-      transaction_date: input.transactionDate,
+      source: "income",
+      lines: [
+        buildLine(cash.id, "debit", input.amount, "Kas masuk"),
+        buildLine(revenue.id, "credit", input.amount, "Pendapatan jasa"),
+      ],
     },
   };
 }
 
-export function validateExpensePayload(input: {
-  category: string;
-  description: string;
-  amount: number;
-  transactionDate: string;
-}): ValidationResult<FinancialTransactionInsert> {
+export function buildExpenseJournalPayload(
+  accounts: AccountRow[],
+  input: { category: string; description: string; amount: number; transactionDate: string },
+): ValidationResult<JournalPayload> {
   if (!expenseCategoryMap.has(input.category)) {
     return { ok: false, error: "Kategori beban tidak valid." };
   }
@@ -196,25 +262,33 @@ export function validateExpensePayload(input: {
     return { ok: false, error: amountError };
   }
 
+  const cash = findAccountByCode(accounts, "1010");
+  const expense = findAccountByCode(accounts, expenseAccountCodeMap.get(input.category) ?? "5099");
+
   return {
     ok: true,
     value: {
-      transaction_type: "expense",
-      category: input.category,
+      entryDate: input.transactionDate,
       description: normalizeText(input.description),
-      amount: input.amount,
-      transaction_date: input.transactionDate,
+      source: "expense",
+      lines: [
+        buildLine(expense.id, "debit", input.amount, getExpenseCategoryLabel(input.category)),
+        buildLine(cash.id, "credit", input.amount, "Kas keluar"),
+      ],
     },
   };
 }
 
-export function validateAssetPayload(input: {
-  category: string;
-  name: string;
-  amount: number;
-  transactionDate: string;
-  fundingSource: AssetFundingSource | "";
-}): ValidationResult<FinancialTransactionInsert> {
+export function buildAssetJournalPayload(
+  accounts: AccountRow[],
+  input: {
+    category: string;
+    name: string;
+    amount: number;
+    transactionDate: string;
+    fundingSource: AssetFundingSource | "";
+  },
+): ValidationResult<JournalPayload> {
   if (!assetCategoryMap.has(input.category)) {
     return { ok: false, error: "Kategori aset tidak valid." };
   }
@@ -245,25 +319,97 @@ export function validateAssetPayload(input: {
     return { ok: false, error: amountError };
   }
 
+  const assetAccount = findAccountByCode(accounts, assetAccountCodeMap.get(input.category) ?? "1510");
+  const creditAccount =
+    input.fundingSource === "cash"
+      ? findAccountByCode(accounts, "1010")
+      : input.fundingSource === "equity"
+        ? findAccountByCode(accounts, "3010")
+        : findAccountByCode(accounts, "2110");
+
   return {
     ok: true,
     value: {
-      transaction_type: "asset",
-      category: input.category,
+      entryDate: input.transactionDate,
       description: `Akuisisi aset: ${normalizeText(input.name)}`,
-      amount: input.amount,
-      transaction_date: input.transactionDate,
-      asset_name: normalizeText(input.name),
-      funding_source: input.fundingSource,
+      source: "asset",
+      lines: [
+        buildLine(assetAccount.id, "debit", input.amount, getAssetCategoryLabel(input.category)),
+        buildLine(creditAccount.id, "credit", input.amount, getFundingSourceLabel(input.fundingSource)),
+      ],
     },
   };
 }
 
-export function getReportingPeriod(
-  transactions: FinancialTransactionRow[],
-): PeriodRange {
-  const latestDate = transactions[0]?.transaction_date
-    ? new Date(`${transactions[0].transaction_date}T00:00:00`)
+export function buildOpeningBalanceJournalPayload(
+  accounts: AccountRow[],
+  input: { description: string; amount: number; transactionDate: string },
+): ValidationResult<JournalPayload> {
+  const descriptionError = validateDescription(input.description, "Keterangan");
+  if (descriptionError) {
+    return { ok: false, error: descriptionError };
+  }
+
+  const dateError = validateDateString(input.transactionDate, "Tanggal");
+  if (dateError) {
+    return { ok: false, error: dateError };
+  }
+
+  const amountError = validateAmount(input.amount, "Jumlah modal awal");
+  if (amountError) {
+    return { ok: false, error: amountError };
+  }
+
+  const cash = findAccountByCode(accounts, "1010");
+  const equity = findAccountByCode(accounts, "3010");
+
+  return {
+    ok: true,
+    value: {
+      entryDate: input.transactionDate,
+      description: normalizeText(input.description),
+      source: "opening_balance",
+      lines: [
+        buildLine(cash.id, "debit", input.amount, "Saldo kas awal"),
+        buildLine(equity.id, "credit", input.amount, "Modal pemilik"),
+      ],
+    },
+  };
+}
+
+export function buildLegacyJournalPayload(
+  accounts: AccountRow[],
+  transaction: FinancialTransactionRow,
+): ValidationResult<JournalPayload> {
+  if (transaction.transaction_type === "income") {
+    return buildIncomeJournalPayload(accounts, {
+      description: transaction.description,
+      amount: Number(transaction.amount),
+      transactionDate: transaction.transaction_date,
+    });
+  }
+
+  if (transaction.transaction_type === "expense") {
+    return buildExpenseJournalPayload(accounts, {
+      category: transaction.category,
+      description: transaction.description,
+      amount: Number(transaction.amount),
+      transactionDate: transaction.transaction_date,
+    });
+  }
+
+  return buildAssetJournalPayload(accounts, {
+    category: transaction.category,
+    name: transaction.asset_name ?? transaction.description,
+    amount: Number(transaction.amount),
+    transactionDate: transaction.transaction_date,
+    fundingSource: transaction.funding_source ?? "",
+  });
+}
+
+function getReportingPeriod(entries: JournalEntryRow[]): PeriodRange {
+  const latestDate = entries[0]?.entry_date
+    ? new Date(`${entries[0].entry_date}T00:00:00`)
     : new Date();
 
   return {
@@ -272,77 +418,115 @@ export function getReportingPeriod(
   };
 }
 
+function getEntryDate(entry: JournalEntryRow) {
+  return new Date(`${entry.entry_date}T00:00:00`);
+}
+
 function isWithinRange(dateValue: string, range: PeriodRange) {
   const date = new Date(`${dateValue}T00:00:00`);
   return date >= range.start && date <= range.end;
 }
 
-function groupByLabel(
-  items: FinancialTransactionRow[],
-  getLabel: (item: FinancialTransactionRow) => string,
-) {
-  const map = new Map<string, number>();
-  for (const item of items) {
-    const label = getLabel(item);
-    map.set(label, (map.get(label) ?? 0) + Number(item.amount));
-  }
-  return Array.from(map.entries())
-    .map(([keterangan, jumlah]) => ({ keterangan, jumlah }))
-    .sort((a, b) => b.jumlah - a.jumlah);
+function normalBalanceSign(accountClass: AccountClass) {
+  return accountClass === "asset" || accountClass === "expense" ? 1 : -1;
 }
 
-function sumTransactionsByType(
-  items: FinancialTransactionRow[],
-  transactionType: "income" | "expense",
-) {
-  return items
-    .filter((item) => item.transaction_type === transactionType)
-    .reduce((sum, item) => sum + Number(item.amount), 0);
+function signedLineAmount(accountClass: AccountClass, lineType: "debit" | "credit", amount: number) {
+  const sign = normalBalanceSign(accountClass);
+  return lineType === "debit" ? sign * amount : -sign * amount;
 }
 
-function calculateCashBeforeDate(
-  transactions: FinancialTransactionRow[],
-  before: Date,
-) {
-  let cash = 0;
+function buildTrialBalance(accounts: AccountRow[], entries: JournalEntryRow[], asOfDate?: string) {
+  const balances = new Map<string, number>();
+  const cutoff = asOfDate ? new Date(`${asOfDate}T00:00:00`) : null;
 
-  for (const item of transactions) {
-    const transactionDate = new Date(`${item.transaction_date}T00:00:00`);
-    if (transactionDate >= before) {
+  for (const entry of entries) {
+    if (cutoff && getEntryDate(entry) > cutoff) {
       continue;
     }
 
-    const amount = Number(item.amount);
-
-    if (item.transaction_type === "income") {
-      cash += amount;
-    } else if (item.transaction_type === "expense") {
-      cash -= amount;
-    } else if (item.transaction_type === "asset") {
-      if (item.category === "cash" && item.funding_source !== "cash") {
-        cash += amount;
-      } else if (item.category !== "cash" && item.funding_source === "cash") {
-        cash -= amount;
+    for (const line of entry.journal_entry_lines) {
+      const account = line.accounts ?? accounts.find((item) => item.id === line.account_id);
+      if (!account) {
+        continue;
       }
+
+      const current = balances.get(account.id) ?? 0;
+      balances.set(
+        account.id,
+        current + signedLineAmount(account.account_class, line.line_type, Number(line.amount)),
+      );
     }
   }
 
-  return cash;
+  return accounts
+    .map((account) => ({
+      account,
+      balance: Number((balances.get(account.id) ?? 0).toFixed(2)),
+    }))
+    .filter((item) => item.balance !== 0);
 }
 
-export function buildDashboardData(transactions: FinancialTransactionRow[]) {
-  const anchor = getReportingPeriod(transactions).start;
-  const monthlyData = [];
+function buildPeriodStatementRows(
+  entries: JournalEntryRow[],
+  accountClass: "revenue" | "expense",
+  range: PeriodRange,
+) {
+  const rows: ReportRow[] = [];
 
+  for (const entry of entries) {
+    if (!isWithinRange(entry.entry_date, range)) {
+      continue;
+    }
+
+    for (const line of entry.journal_entry_lines) {
+      const account = line.accounts;
+      if (!account || account.account_class !== accountClass) {
+        continue;
+      }
+
+      const amount = Math.abs(
+        signedLineAmount(account.account_class, line.line_type, Number(line.amount)),
+      );
+
+      rows.push({
+        id: entry.id,
+        description:
+          accountClass === "revenue"
+            ? entry.description
+            : `${account.name}${entry.description ? `: ${entry.description}` : ""}`,
+        date: entry.entry_date,
+        amount,
+      });
+    }
+  }
+
+  return rows.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export function buildDashboardData(accounts: AccountRow[], entries: JournalEntryRow[]) {
+  const anchor = getReportingPeriod(entries).start;
+  const trialBalance = buildTrialBalance(accounts, entries);
+  const cashAccount = accounts.find((item) => item.account_category === "cash");
+  const cashBalance = cashAccount
+    ? trialBalance.find((item) => item.account.id === cashAccount.id)?.balance ?? 0
+    : 0;
+
+  const monthlyData = [];
   for (let offset = 6; offset >= 0; offset -= 1) {
     const month = subMonths(anchor, offset);
     const period = {
       start: startOfMonth(month),
       end: endOfMonth(month),
     };
-    const data = transactions.filter((item) => isWithinRange(item.transaction_date, period));
-    const pendapatan = sumTransactionsByType(data, "income");
-    const beban = sumTransactionsByType(data, "expense");
+    const pendapatan = buildPeriodStatementRows(entries, "revenue", period).reduce(
+      (sum, item) => sum + item.amount,
+      0,
+    );
+    const beban = buildPeriodStatementRows(entries, "expense", period).reduce(
+      (sum, item) => sum + item.amount,
+      0,
+    );
     monthlyData.push({
       bulan: monthFormatter.format(month),
       pendapatan,
@@ -358,195 +542,228 @@ export function buildDashboardData(transactions: FinancialTransactionRow[]) {
     laba: 0,
   };
   const previousMonth = monthlyData[monthlyData.length - 2] ?? currentMonth;
-  const currentRange = getReportingPeriod(transactions);
-  const currentTransactions = transactions.filter((item) =>
-    isWithinRange(item.transaction_date, currentRange),
-  );
 
-  const expenseData = groupByLabel(
-    currentTransactions.filter((item) => item.transaction_type === "expense"),
-    (item) => getExpenseCategoryLabel(item.category),
-  ).map((item, index) => ({
-    ...item,
-    color: ["#2563eb", "#0f766e", "#d97706", "#7c3aed", "#dc2626", "#0891b2", "#4b5563"][index % 7],
-  }));
+  const currentRange = getReportingPeriod(entries);
+  const expenseRows = buildPeriodStatementRows(entries, "expense", currentRange);
+  const expenseMap = new Map<string, number>();
+  for (const row of expenseRows) {
+    const label = row.description.split(":")[0];
+    expenseMap.set(label, (expenseMap.get(label) ?? 0) + row.amount);
+  }
 
-  const balance = buildBalanceSheetData(transactions);
+  const expenseData = Array.from(expenseMap.entries())
+    .map(([keterangan, jumlah], index) => ({
+      keterangan,
+      jumlah,
+      color: ["#2563eb", "#0f766e", "#d97706", "#7c3aed", "#dc2626", "#0891b2", "#4b5563"][index % 7],
+    }))
+    .sort((a, b) => b.jumlah - a.jumlah);
 
   return {
     currentLabel: longMonthFormatter.format(currentRange.start),
     monthlyData,
     expenseData,
-    cashBalance: balance.totalAsetLancar,
+    cashBalance,
     currentMonth,
     previousMonth,
   };
 }
 
-export function buildIncomeStatementData(transactions: FinancialTransactionRow[]) {
-  const period = getReportingPeriod(transactions);
-  const scoped = transactions.filter((item) => isWithinRange(item.transaction_date, period));
-  const pendapatan = groupByLabel(
-    scoped.filter((item) => item.transaction_type === "income"),
-    (item) => item.description,
-  );
-  const beban = groupByLabel(
-    scoped.filter((item) => item.transaction_type === "expense"),
-    (item) => getExpenseCategoryLabel(item.category),
-  );
+export function buildIncomeStatementData(
+  entries: JournalEntryRow[],
+  monthValue?: string,
+) {
+  const fallbackMonth = getMonthInputValue(entries[0]?.entry_date ?? new Date().toISOString().slice(0, 10));
+  const selectedMonth = monthValue ?? fallbackMonth;
+  const [year, month] = selectedMonth.split("-").map(Number);
+  const period = {
+    start: startOfMonth(new Date(year, month - 1, 1)),
+    end: endOfMonth(new Date(year, month - 1, 1)),
+  };
 
   return {
     bulan: longMonthFormatter.format(period.start),
-    pendapatan,
-    beban,
+    pendapatan: buildPeriodStatementRows(entries, "revenue", period),
+    beban: buildPeriodStatementRows(entries, "expense", period),
   };
 }
 
-export function buildCashFlowData(transactions: FinancialTransactionRow[]) {
-  const period = getReportingPeriod(transactions);
-  const scoped = transactions.filter((item) => isWithinRange(item.transaction_date, period));
-  const kasMasuk: LineItem[] = [];
-  const kasKeluar: LineItem[] = [];
+function classifyCashFlow(entry: JournalEntryRow) {
+  const counterpart = entry.journal_entry_lines.find(
+    (line) => line.accounts?.account_category !== "cash",
+  )?.accounts;
 
-  for (const item of scoped) {
-    if (item.transaction_type === "income") {
-      kasMasuk.push({ keterangan: item.description, jumlah: Number(item.amount) });
-    }
-
-    if (item.transaction_type === "expense") {
-      kasKeluar.push({
-        keterangan: `${getExpenseCategoryLabel(item.category)}: ${item.description}`,
-        jumlah: Number(item.amount),
-      });
-    }
-
-    if (item.transaction_type === "asset") {
-      if (item.category === "cash" && item.funding_source !== "cash") {
-        kasMasuk.push({
-          keterangan: `${getAssetCategoryLabel(item.category)} dari ${getFundingSourceLabel(item.funding_source!)}`,
-          jumlah: Number(item.amount),
-        });
-      }
-
-      if (item.category !== "cash" && item.funding_source === "cash") {
-        kasKeluar.push({
-          keterangan: `Pembelian ${item.asset_name ?? getAssetCategoryLabel(item.category)}`,
-          jumlah: Number(item.amount),
-        });
-      }
-    }
+  if (!counterpart) {
+    return "operasi" as const;
   }
 
-  const totalKasMasuk = kasMasuk.reduce((sum, item) => sum + item.jumlah, 0);
-  const totalKasKeluar = kasKeluar.reduce((sum, item) => sum + item.jumlah, 0);
+  if (counterpart.account_class === "equity" || counterpart.account_class === "liability") {
+    return "pendanaan" as const;
+  }
+
+  if (counterpart.account_class === "asset" && counterpart.account_category !== "cash") {
+    return "investasi" as const;
+  }
+
+  return "operasi" as const;
+}
+
+function calculateCashBeforeDate(entries: JournalEntryRow[], before: Date) {
+  let cash = 0;
+  for (const entry of entries) {
+    if (getEntryDate(entry) >= before) {
+      continue;
+    }
+
+    for (const line of entry.journal_entry_lines) {
+      const account = line.accounts;
+      if (!account || account.account_category !== "cash") {
+        continue;
+      }
+
+      cash += signedLineAmount(account.account_class, line.line_type, Number(line.amount));
+    }
+  }
+  return cash;
+}
+
+export function buildCashFlowData(entries: JournalEntryRow[], monthValue?: string) {
+  const fallbackMonth = getMonthInputValue(entries[0]?.entry_date ?? new Date().toISOString().slice(0, 10));
+  const selectedMonth = monthValue ?? fallbackMonth;
+  const [year, month] = selectedMonth.split("-").map(Number);
+  const period = {
+    start: startOfMonth(new Date(year, month - 1, 1)),
+    end: endOfMonth(new Date(year, month - 1, 1)),
+  };
+
+  const kasMasuk: CashFlowRow[] = [];
+  const kasKeluar: CashFlowRow[] = [];
+
+  for (const entry of entries) {
+    if (!isWithinRange(entry.entry_date, period)) {
+      continue;
+    }
+
+    const cashEffect = entry.journal_entry_lines.reduce((sum, line) => {
+      const account = line.accounts;
+      if (!account || account.account_category !== "cash") {
+        return sum;
+      }
+      return sum + signedLineAmount(account.account_class, line.line_type, Number(line.amount));
+    }, 0);
+
+    if (cashEffect === 0) {
+      continue;
+    }
+
+    const row = {
+      id: entry.id,
+      keterangan: entry.description,
+      jumlah: Math.abs(cashEffect),
+      klasifikasi: classifyCashFlow(entry),
+    };
+
+    if (cashEffect > 0) {
+      kasMasuk.push(row);
+    } else {
+      kasKeluar.push(row);
+    }
+  }
 
   return {
     bulan: longMonthFormatter.format(period.start),
     kasMasuk,
     kasKeluar,
-    saldoAwal: calculateCashBeforeDate(transactions, period.start),
-    totalKasMasuk,
-    totalKasKeluar,
+    saldoAwal: calculateCashBeforeDate(entries, period.start),
+    totalKasMasuk: kasMasuk.reduce((sum, item) => sum + item.jumlah, 0),
+    totalKasKeluar: kasKeluar.reduce((sum, item) => sum + item.jumlah, 0),
   };
 }
 
-export function buildBalanceSheetData(transactions: FinancialTransactionRow[]) {
-  const asOf = getReportingPeriod(transactions).end;
-  const scoped = transactions.filter((item) => {
-    const date = new Date(`${item.transaction_date}T00:00:00`);
-    return date <= asOf;
-  });
+export function buildBalanceSheetData(accounts: AccountRow[], entries: JournalEntryRow[], monthValue?: string) {
+  const fallbackMonth = getMonthInputValue(entries[0]?.entry_date ?? new Date().toISOString().slice(0, 10));
+  const selectedMonth = monthValue ?? fallbackMonth;
+  const [year, month] = selectedMonth.split("-").map(Number);
+  const asOf = endOfMonth(new Date(year, month - 1, 1));
+  const trialBalance = buildTrialBalance(accounts, entries, format(asOf, "yyyy-MM-dd"));
 
-  let cash = 0;
-  let retainedEarnings = 0;
-  const nonCashAssets = new Map<string, number>();
-  const liabilities = new Map<string, number>();
-  const equity = new Map<string, number>();
-
-  for (const item of scoped) {
-    const amount = Number(item.amount);
-
-    if (item.transaction_type === "income") {
-      cash += amount;
-      retainedEarnings += amount;
-      continue;
-    }
-
-    if (item.transaction_type === "expense") {
-      cash -= amount;
-      retainedEarnings -= amount;
-      continue;
-    }
-
-    if (item.transaction_type === "asset") {
-      const assetLabel = item.asset_name ?? getAssetCategoryLabel(item.category);
-
-      if (item.category === "cash") {
-        cash += amount;
-      } else {
-        nonCashAssets.set(assetLabel, (nonCashAssets.get(assetLabel) ?? 0) + amount);
+  const incomeToDate = entries
+    .filter((entry) => getEntryDate(entry) <= asOf)
+    .flatMap((entry) => entry.journal_entry_lines)
+    .reduce((sum, line) => {
+      const account = line.accounts;
+      if (!account) {
+        return sum;
       }
-
-      if (item.funding_source === "cash" && item.category !== "cash") {
-        cash -= amount;
+      if (account.account_class === "revenue") {
+        return sum + Math.abs(signedLineAmount(account.account_class, line.line_type, Number(line.amount)));
       }
-
-      if (item.funding_source === "equity") {
-        equity.set("Modal Pemilik", (equity.get("Modal Pemilik") ?? 0) + amount);
+      if (account.account_class === "expense") {
+        return sum - Math.abs(signedLineAmount(account.account_class, line.line_type, Number(line.amount)));
       }
+      return sum;
+    }, 0);
 
-      if (item.funding_source === "debt") {
-        liabilities.set(
-          "Utang Pendanaan Aset",
-          (liabilities.get("Utang Pendanaan Aset") ?? 0) + amount,
-        );
-      }
-    }
+  const aset: BalanceSection[] = trialBalance
+    .filter((item) => item.account.account_class === "asset" && item.balance > 0)
+    .map((item) => ({ id: item.account.id, keterangan: item.account.name, jumlah: item.balance }));
+
+  const kewajiban: BalanceSection[] = trialBalance
+    .filter((item) => item.account.account_class === "liability" && item.balance > 0)
+    .map((item) => ({ id: item.account.id, keterangan: item.account.name, jumlah: item.balance }));
+
+  const modalBase: BalanceSection[] = trialBalance
+    .filter(
+      (item) =>
+        item.account.account_class === "equity" &&
+        item.account.account_category !== "retained_earnings" &&
+        item.balance > 0,
+    )
+    .map((item) => ({ id: item.account.id, keterangan: item.account.name, jumlah: item.balance }));
+
+  if (incomeToDate !== 0) {
+    modalBase.push({
+      id: "retained-earnings-computed",
+      keterangan: "Laba Ditahan",
+      jumlah: incomeToDate,
+    });
   }
-
-  if (retainedEarnings !== 0) {
-    equity.set("Laba Ditahan", (equity.get("Laba Ditahan") ?? 0) + retainedEarnings);
-  }
-
-  if (cash < 0) {
-    liabilities.set("Utang Operasional", (liabilities.get("Utang Operasional") ?? 0) + Math.abs(cash));
-    cash = 0;
-  }
-
-  const aset: BalanceSection[] = [
-    { keterangan: "Kas", jumlah: cash },
-    ...Array.from(nonCashAssets.entries()).map(([keterangan, jumlah]) => ({ keterangan, jumlah })),
-  ].filter((item) => item.jumlah > 0);
-
-  const kewajiban = Array.from(liabilities.entries())
-    .map(([keterangan, jumlah]) => ({ keterangan, jumlah }))
-    .filter((item) => item.jumlah > 0);
-
-  const modal = Array.from(equity.entries())
-    .map(([keterangan, jumlah]) => ({ keterangan, jumlah }))
-    .filter((item) => item.jumlah > 0);
 
   return {
     tanggal: dateFormatter.format(asOf),
     aset,
     kewajiban,
-    modal,
+    modal: modalBase,
     totalAset: aset.reduce((sum, item) => sum + item.jumlah, 0),
     totalKewajiban: kewajiban.reduce((sum, item) => sum + item.jumlah, 0),
-    totalModal: modal.reduce((sum, item) => sum + item.jumlah, 0),
-    totalAsetLancar: cash,
+    totalModal: modalBase.reduce((sum, item) => sum + item.jumlah, 0),
+    totalAsetLancar: aset
+      .filter((item) => item.keterangan === "Kas" || item.keterangan === "Piutang Usaha" || item.keterangan === "Persediaan")
+      .reduce((sum, item) => sum + item.jumlah, 0),
   };
 }
 
-export function getMonthRangeLabel(dateValue: string) {
-  return format(new Date(`${dateValue}T00:00:00`), "yyyy-MM-dd");
+export function getMonthInputValue(dateValue: string) {
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(dateValue)
+    ? `${dateValue}T00:00:00`
+    : dateValue;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) {
+    return format(new Date(), "yyyy-MM");
+  }
+  return format(date, "yyyy-MM");
+}
+
+export function getLongMonthLabelFromMonthInput(monthValue: string) {
+  const [year, month] = monthValue.split("-").map(Number);
+  return longMonthFormatter.format(new Date(year, month - 1, 1));
 }
 
 export function downloadCsv(filename: string, rows: Array<Array<string | number>>) {
   const csv = rows
     .map((row) =>
       row
-        .map((cell) => `"${String(cell).replaceAll('"', '""')}"`)
+        .map((cell) => `"${String(cell ?? "").replaceAll('"', '""')}"`)
         .join(","),
     )
     .join("\n");
