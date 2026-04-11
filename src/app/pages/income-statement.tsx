@@ -1,9 +1,19 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { CalendarDays, Download, Plus, Printer, Trash2 } from "lucide-react";
+import { CalendarDays, Download, Pencil, Plus, Printer } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "../components/ui/dialog";
+import { Input } from "../components/ui/input";
+import { Label } from "../components/ui/label";
 import {
   Table,
   TableBody,
@@ -16,22 +26,29 @@ import {
   buildIncomeStatementData,
   downloadCsv,
   formatDisplayDate,
+  formatNumberInput,
   formatRupiah,
   getLongMonthLabelFromMonthInput,
   getMonthInputValue,
+  parseCurrencyInput,
 } from "../../lib/finance";
 import { useAuth } from "../providers/auth-provider";
 import { useFinance } from "../providers/finance-provider";
+import type { JournalEntryRow } from "../../lib/supabase";
 
 export function IncomeStatement() {
   const navigate = useNavigate();
   const { profile } = useAuth();
-  const { journalEntries, deleteJournalEntry } = useFinance();
+  const { journalEntries, updateJournalEntry } = useFinance();
   const defaultMonth = getMonthInputValue(
     journalEntries[0]?.entry_date ?? new Date().toISOString().slice(0, 10),
   );
   const [selectedMonth, setSelectedMonth] = useState(defaultMonth);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
+  const [editDate, setEditDate] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [editAmount, setEditAmount] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
 
   const { pendapatan: incomeRows, beban: expenseRows } = useMemo(
     () => buildIncomeStatementData(journalEntries, selectedMonth),
@@ -61,15 +78,81 @@ export function IncomeStatement() {
     ]);
   };
 
-  const handleDelete = async (id: string) => {
-    setDeletingId(id);
+  const editingEntry = useMemo<JournalEntryRow | null>(
+    () => journalEntries.find((item) => item.id === editingEntryId) ?? null,
+    [editingEntryId, journalEntries],
+  );
+
+  const openEditDialog = (id: string) => {
+    const entry = journalEntries.find((item) => item.id === id);
+    if (!entry) {
+      return;
+    }
+
+    const primaryLine = entry.journal_entry_lines.find(
+      (line) => line.accounts?.account_class === "revenue" || line.accounts?.account_class === "expense",
+    );
+
+    setEditingEntryId(entry.id);
+    setEditDate(entry.entry_date);
+    setEditDescription(entry.description);
+    setEditAmount(String(primaryLine ? Number(primaryLine.amount) : 0));
+  };
+
+  const handleCloseDialog = () => {
+    if (isSaving) {
+      return;
+    }
+
+    setEditingEntryId(null);
+    setEditDate("");
+    setEditDescription("");
+    setEditAmount("");
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingEntry) {
+      return;
+    }
+
+    const normalizedDescription = editDescription.trim().replace(/\s+/g, " ");
+    const amount = parseCurrencyInput(editAmount);
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(editDate)) {
+      toast.error("Tanggal wajib diisi.");
+      return;
+    }
+
+    if (normalizedDescription.length < 3) {
+      toast.error("Keterangan minimal 3 karakter.");
+      return;
+    }
+
+    if (amount <= 0) {
+      toast.error("Jumlah harus lebih besar dari 0.");
+      return;
+    }
+
+    setIsSaving(true);
     try {
-      await deleteJournalEntry(id);
-      toast.success("Jurnal transaksi dihapus.");
+      await updateJournalEntry({
+        id: editingEntry.id,
+        entryDate: editDate,
+        description: normalizedDescription,
+        source: editingEntry.source,
+        lines: editingEntry.journal_entry_lines.map((line) => ({
+          account_id: line.account_id,
+          line_type: line.line_type,
+          amount,
+          memo: line.memo ?? undefined,
+        })),
+      });
+      toast.success("Jurnal transaksi diperbarui.");
+      handleCloseDialog();
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Gagal menghapus transaksi.");
+      toast.error(error instanceof Error ? error.message : "Gagal memperbarui transaksi.");
     } finally {
-      setDeletingId(null);
+      setIsSaving(false);
     }
   };
 
@@ -174,43 +257,48 @@ export function IncomeStatement() {
           </div>
         </CardHeader>
         <CardContent className="p-0 overflow-x-auto print-table-wrap">
-          <Table className="min-w-[760px] print-no-min-width">
+          <Table className="min-w-[640px] table-fixed print-no-min-width">
+            <colgroup>
+              <col className="w-[58%]" />
+              <col className="w-[16%]" />
+              <col className="w-[18%]" />
+              <col className="w-[8%]" />
+            </colgroup>
             <TableHeader>
               <TableRow>
-                <TableHead>Keterangan</TableHead>
-                <TableHead>Tanggal</TableHead>
-                <TableHead className="text-right">Jumlah (Rp)</TableHead>
+                <TableHead className="whitespace-normal">Keterangan</TableHead>
+                <TableHead className="whitespace-normal">Tanggal</TableHead>
+                <TableHead className="text-right whitespace-normal">Jumlah (Rp)</TableHead>
                 <TableHead className="text-right print-hidden">Aksi</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               <TableRow className="bg-green-50">
-                <TableCell colSpan={4} className="font-semibold text-green-800">
+                <TableCell colSpan={4} className="font-semibold text-green-800 whitespace-normal">
                   PENDAPATAN
                 </TableCell>
               </TableRow>
               {incomeRows.length > 0 ? (
                 incomeRows.map((item) => (
                   <TableRow key={`${item.id}-income`}>
-                    <TableCell className="pl-8">{item.description}</TableCell>
-                    <TableCell>{formatDisplayDate(item.date)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatRupiah(item.amount)}</TableCell>
+                    <TableCell className="pl-4 sm:pl-8 whitespace-normal break-words">{item.description}</TableCell>
+                    <TableCell className="whitespace-normal">{formatDisplayDate(item.date)}</TableCell>
+                    <TableCell className="text-right font-medium whitespace-normal break-words">{formatRupiah(item.amount)}</TableCell>
                     <TableCell className="text-right print-hidden">
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => handleDelete(item.id)}
-                        disabled={deletingId === item.id}
-                        aria-label="Hapus jurnal"
+                        onClick={() => openEditDialog(item.id)}
+                        aria-label="Edit jurnal"
                       >
-                        <Trash2 className="w-4 h-4 text-red-600" />
+                        <Pencil className="w-4 h-4 text-blue-600" />
                       </Button>
                     </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell className="pl-8 text-gray-500" colSpan={4}>
+                  <TableCell className="pl-4 sm:pl-8 text-gray-500 whitespace-normal" colSpan={4}>
                     Belum ada pendapatan pada periode ini
                   </TableCell>
                 </TableRow>
@@ -227,32 +315,31 @@ export function IncomeStatement() {
               </TableRow>
 
               <TableRow className="bg-orange-50">
-                <TableCell colSpan={4} className="font-semibold text-orange-800">
+                <TableCell colSpan={4} className="font-semibold text-orange-800 whitespace-normal">
                   BEBAN OPERASIONAL
                 </TableCell>
               </TableRow>
               {expenseRows.length > 0 ? (
                 expenseRows.map((item) => (
                   <TableRow key={`${item.id}-expense`}>
-                    <TableCell className="pl-8">{item.description}</TableCell>
-                    <TableCell>{formatDisplayDate(item.date)}</TableCell>
-                    <TableCell className="text-right font-medium">{formatRupiah(item.amount)}</TableCell>
+                    <TableCell className="pl-4 sm:pl-8 whitespace-normal break-words">{item.description}</TableCell>
+                    <TableCell className="whitespace-normal">{formatDisplayDate(item.date)}</TableCell>
+                    <TableCell className="text-right font-medium whitespace-normal break-words">{formatRupiah(item.amount)}</TableCell>
                     <TableCell className="text-right print-hidden">
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => handleDelete(item.id)}
-                        disabled={deletingId === item.id}
-                        aria-label="Hapus jurnal"
+                        onClick={() => openEditDialog(item.id)}
+                        aria-label="Edit jurnal"
                       >
-                        <Trash2 className="w-4 h-4 text-red-600" />
+                        <Pencil className="w-4 h-4 text-blue-600" />
                       </Button>
                     </TableCell>
                   </TableRow>
                 ))
               ) : (
                 <TableRow>
-                  <TableCell className="pl-8 text-gray-500" colSpan={4}>
+                  <TableCell className="pl-4 sm:pl-8 text-gray-500 whitespace-normal" colSpan={4}>
                     Belum ada beban pada periode ini
                   </TableCell>
                 </TableRow>
@@ -284,6 +371,60 @@ export function IncomeStatement() {
       <div className="print-only print-note">
         Dokumen ini dihasilkan dari jurnal transaksi yang telah diposting dan disajikan untuk kebutuhan pelaporan internal.
       </div>
+
+      <Dialog open={Boolean(editingEntry)} onOpenChange={(open) => !open && handleCloseDialog()}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Transaksi</DialogTitle>
+            <DialogDescription>
+              Ubah tanggal, keterangan, dan jumlah jurnal tanpa mengubah klasifikasi akun.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-income-date">Tanggal</Label>
+              <Input
+                id="edit-income-date"
+                type="date"
+                value={editDate}
+                onChange={(e) => setEditDate(e.target.value)}
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-income-description">Keterangan</Label>
+              <Input
+                id="edit-income-description"
+                type="text"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
+                placeholder="Masukkan keterangan transaksi"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-income-amount">Jumlah (Rp)</Label>
+              <Input
+                id="edit-income-amount"
+                type="text"
+                value={formatNumberInput(editAmount)}
+                onChange={(e) => setEditAmount(e.target.value.replace(/\D/g, ""))}
+                placeholder="0"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={handleCloseDialog} disabled={isSaving}>
+              Batal
+            </Button>
+            <Button onClick={handleSaveEdit} disabled={isSaving}>
+              {isSaving ? "Menyimpan..." : "Simpan Perubahan"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

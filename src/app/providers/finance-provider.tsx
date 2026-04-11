@@ -31,6 +31,7 @@ interface FinanceContextValue {
   error: string | null;
   refresh: () => Promise<void>;
   createJournalEntry: (payload: CreateJournalEntryInput) => Promise<void>;
+  updateJournalEntry: (payload: CreateJournalEntryInput & { id: string }) => Promise<void>;
   deleteJournalEntry: (id: string) => Promise<void>;
 }
 
@@ -183,6 +184,61 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setJournalEntries((current) => sortEntries([insertedEntry as JournalEntryRow, ...current]));
   }
 
+  async function updateJournalEntry(payload: CreateJournalEntryInput & { id: string }) {
+    if (!supabase || !user) {
+      throw new Error("Supabase belum dikonfigurasi.");
+    }
+
+    const { error: entryError } = await supabase
+      .from("journal_entries")
+      .update({
+        entry_date: payload.entryDate,
+        description: payload.description,
+        source: payload.source,
+      })
+      .eq("id", payload.id)
+      .eq("user_id", user.id);
+
+    if (entryError) {
+      throw new Error(entryError.message);
+    }
+
+    const lineUpdates = payload.lines.map((line) =>
+      supabase
+        .from("journal_entry_lines")
+        .update({
+          account_id: line.account_id,
+          line_type: line.line_type,
+          amount: line.amount,
+          memo: line.memo ?? null,
+        })
+        .eq("journal_entry_id", payload.id)
+        .eq("account_id", line.account_id),
+    );
+
+    const lineResults = await Promise.all(lineUpdates);
+    const failedLine = lineResults.find((result) => result.error);
+    if (failedLine?.error) {
+      throw new Error(failedLine.error.message);
+    }
+
+    const { data: updatedEntry, error: fetchError } = await supabase
+      .from("journal_entries")
+      .select("*, journal_entry_lines(*, accounts(*))")
+      .eq("id", payload.id)
+      .single();
+
+    if (fetchError) {
+      throw new Error(fetchError.message);
+    }
+
+    setJournalEntries((current) =>
+      sortEntries(
+        current.map((item) => (item.id === payload.id ? (updatedEntry as JournalEntryRow) : item)),
+      ),
+    );
+  }
+
   async function deleteJournalEntry(id: string) {
     if (!supabase || !user) {
       throw new Error("Supabase belum dikonfigurasi.");
@@ -209,6 +265,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       error,
       refresh,
       createJournalEntry,
+      updateJournalEntry,
       deleteJournalEntry,
     }),
     [accounts, journalEntries, isLoading, error],

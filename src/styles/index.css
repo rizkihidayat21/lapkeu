@@ -105,15 +105,22 @@
     overflow: visible !important;
   }
 
+  [data-slot='table-container'] {
+    overflow: visible !important;
+  }
+
   table {
     width: 100% !important;
     border-collapse: collapse !important;
+    table-layout: fixed !important;
   }
 
   th,
   td {
     border-color: #cbd5e1 !important;
     vertical-align: top !important;
+    white-space: normal !important;
+    word-break: break-word !important;
   }
 
   th {
