@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { CalendarDays, Download, Pencil, Plus, Printer } from "lucide-react";
+import { CalendarDays, Download, Pencil, Plus, Printer, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -39,7 +39,7 @@ import type { JournalEntryRow } from "../../lib/supabase";
 export function IncomeStatement() {
   const navigate = useNavigate();
   const { profile } = useAuth();
-  const { journalEntries, updateJournalEntry } = useFinance();
+  const { journalEntries, updateJournalEntry, deleteJournalEntry } = useFinance();
   const defaultMonth = getMonthInputValue(
     journalEntries[0]?.entry_date ?? new Date().toISOString().slice(0, 10),
   );
@@ -49,6 +49,7 @@ export function IncomeStatement() {
   const [editDescription, setEditDescription] = useState("");
   const [editAmount, setEditAmount] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const { pendapatan: incomeRows, beban: expenseRows } = useMemo(
     () => buildIncomeStatementData(journalEntries, selectedMonth),
@@ -153,6 +154,21 @@ export function IncomeStatement() {
       toast.error(error instanceof Error ? error.message : "Gagal memperbarui transaksi.");
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    setDeletingId(id);
+    try {
+      await deleteJournalEntry(id);
+      toast.success("Jurnal transaksi dihapus.");
+      if (editingEntryId === id) {
+        handleCloseDialog();
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Gagal menghapus transaksi.");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -285,14 +301,25 @@ export function IncomeStatement() {
                     <TableCell className="whitespace-normal">{formatDisplayDate(item.date)}</TableCell>
                     <TableCell className="text-right font-medium whitespace-normal break-words">{formatRupiah(item.amount)}</TableCell>
                     <TableCell className="text-right print-hidden">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => openEditDialog(item.id)}
-                        aria-label="Edit jurnal"
-                      >
-                        <Pencil className="w-4 h-4 text-blue-600" />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => openEditDialog(item.id)}
+                          aria-label="Edit jurnal"
+                        >
+                          <Pencil className="w-4 h-4 text-blue-600" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleDelete(item.id)}
+                          disabled={deletingId === item.id}
+                          aria-label="Hapus jurnal"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-600" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -326,14 +353,25 @@ export function IncomeStatement() {
                     <TableCell className="whitespace-normal">{formatDisplayDate(item.date)}</TableCell>
                     <TableCell className="text-right font-medium whitespace-normal break-words">{formatRupiah(item.amount)}</TableCell>
                     <TableCell className="text-right print-hidden">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => openEditDialog(item.id)}
-                        aria-label="Edit jurnal"
-                      >
-                        <Pencil className="w-4 h-4 text-blue-600" />
-                      </Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => openEditDialog(item.id)}
+                          aria-label="Edit jurnal"
+                        >
+                          <Pencil className="w-4 h-4 text-blue-600" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => handleDelete(item.id)}
+                          disabled={deletingId === item.id}
+                          aria-label="Hapus jurnal"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-600" />
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
