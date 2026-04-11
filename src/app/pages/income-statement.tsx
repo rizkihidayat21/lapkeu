@@ -5,6 +5,16 @@ import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "../components/ui/alert-dialog";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -39,7 +49,13 @@ import type { JournalEntryRow } from "../../lib/supabase";
 export function IncomeStatement() {
   const navigate = useNavigate();
   const { profile } = useAuth();
-  const { journalEntries, updateJournalEntry, deleteJournalEntry } = useFinance();
+  const {
+    journalEntries,
+    updateJournalEntry,
+    deleteJournalEntry,
+    recentlyDeletedEntry,
+    restoreDeletedJournalEntry,
+  } = useFinance();
   const defaultMonth = getMonthInputValue(
     journalEntries[0]?.entry_date ?? new Date().toISOString().slice(0, 10),
   );
@@ -50,6 +66,8 @@ export function IncomeStatement() {
   const [editAmount, setEditAmount] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [isRestoring, setIsRestoring] = useState(false);
 
   const { pendapatan: incomeRows, beban: expenseRows } = useMemo(
     () => buildIncomeStatementData(journalEntries, selectedMonth),
@@ -172,6 +190,18 @@ export function IncomeStatement() {
     }
   };
 
+  const handleRestore = async () => {
+    setIsRestoring(true);
+    try {
+      await restoreDeletedJournalEntry();
+      toast.success("Jurnal berhasil dipulihkan.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Gagal memulihkan transaksi.");
+    } finally {
+      setIsRestoring(false);
+    }
+  };
+
   return (
     <div className="space-y-6 print-report-page">
       <div className="print-only print-report-header">
@@ -229,6 +259,27 @@ export function IncomeStatement() {
           Tambah Transaksi
         </Button>
       </div>
+
+      {recentlyDeletedEntry ? (
+        <Card className="print-hidden border-amber-200 bg-amber-50">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="font-semibold text-amber-900">Data terakhir dihapus</div>
+              <div className="text-sm text-amber-800 break-words">
+                {recentlyDeletedEntry.description} - {formatDisplayDate(recentlyDeletedEntry.entryDate)}
+              </div>
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleRestore}
+              disabled={isRestoring}
+              className="border-amber-300 bg-white text-amber-900 hover:bg-amber-100"
+            >
+              {isRestoring ? "Memulihkan..." : "Restore"}
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 print-summary-grid">
         <Card className="border-green-200 bg-green-50 print-summary-card">
@@ -313,7 +364,7 @@ export function IncomeStatement() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDelete(item.id)}
+                          onClick={() => setPendingDeleteId(item.id)}
                           disabled={deletingId === item.id}
                           aria-label="Hapus jurnal"
                         >
@@ -365,7 +416,7 @@ export function IncomeStatement() {
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => handleDelete(item.id)}
+                          onClick={() => setPendingDeleteId(item.id)}
                           disabled={deletingId === item.id}
                           aria-label="Hapus jurnal"
                         >
@@ -463,6 +514,31 @@ export function IncomeStatement() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <AlertDialog open={Boolean(pendingDeleteId)} onOpenChange={(open) => !open && setPendingDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Hapus transaksi?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Data jurnal akan dihapus dari daftar. Kamu masih bisa memulihkannya lewat tombol restore selama sesi ini masih berjalan.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={Boolean(deletingId)}>Batal</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={() => {
+                if (pendingDeleteId) {
+                  void handleDelete(pendingDeleteId);
+                }
+                setPendingDeleteId(null);
+              }}
+            >
+              Ya, hapus
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

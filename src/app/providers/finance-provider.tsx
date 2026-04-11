@@ -24,15 +24,25 @@ interface CreateJournalEntryInput {
   lines: JournalLineInput[];
 }
 
+interface DeletedJournalEntrySnapshot {
+  id: string;
+  entryDate: string;
+  description: string;
+  source: JournalSource;
+  lines: JournalLineInput[];
+}
+
 interface FinanceContextValue {
   accounts: AccountRow[];
   journalEntries: JournalEntryRow[];
+  recentlyDeletedEntry: DeletedJournalEntrySnapshot | null;
   isLoading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
   createJournalEntry: (payload: CreateJournalEntryInput) => Promise<void>;
   updateJournalEntry: (payload: CreateJournalEntryInput & { id: string }) => Promise<void>;
   deleteJournalEntry: (id: string) => Promise<void>;
+  restoreDeletedJournalEntry: () => Promise<void>;
 }
 
 const FinanceContext = createContext<FinanceContextValue | null>(null);
@@ -50,6 +60,7 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
   const { user, isConfigured } = useAuth();
   const [accounts, setAccounts] = useState<AccountRow[]>([]);
   const [journalEntries, setJournalEntries] = useState<JournalEntryRow[]>([]);
+  const [recentlyDeletedEntry, setRecentlyDeletedEntry] = useState<DeletedJournalEntrySnapshot | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -244,6 +255,24 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
       throw new Error("Supabase belum dikonfigurasi.");
     }
 
+    const entryToDelete = journalEntries.find((item) => item.id === id);
+    if (!entryToDelete) {
+      throw new Error("Jurnal tidak ditemukan.");
+    }
+
+    setRecentlyDeletedEntry({
+      id: entryToDelete.id,
+      entryDate: entryToDelete.entry_date,
+      description: entryToDelete.description,
+      source: entryToDelete.source,
+      lines: entryToDelete.journal_entry_lines.map((line) => ({
+        account_id: line.account_id,
+        line_type: line.line_type,
+        amount: Number(line.amount),
+        memo: line.memo ?? undefined,
+      })),
+    });
+
     const { error: deleteError } = await supabase
       .from("journal_entries")
       .delete()
@@ -257,18 +286,35 @@ export function FinanceProvider({ children }: { children: ReactNode }) {
     setJournalEntries((current) => current.filter((item) => item.id !== id));
   }
 
+  async function restoreDeletedJournalEntry() {
+    if (!recentlyDeletedEntry) {
+      throw new Error("Tidak ada jurnal yang bisa dipulihkan.");
+    }
+
+    const snapshot = recentlyDeletedEntry;
+    await createJournalEntry({
+      entryDate: snapshot.entryDate,
+      description: snapshot.description,
+      source: snapshot.source,
+      lines: snapshot.lines,
+    });
+    setRecentlyDeletedEntry(null);
+  }
+
   const value = useMemo<FinanceContextValue>(
     () => ({
       accounts,
       journalEntries,
+      recentlyDeletedEntry,
       isLoading,
       error,
       refresh,
       createJournalEntry,
       updateJournalEntry,
       deleteJournalEntry,
+      restoreDeletedJournalEntry,
     }),
-    [accounts, journalEntries, isLoading, error],
+    [accounts, journalEntries, recentlyDeletedEntry, isLoading, error],
   );
 
   return <FinanceContext.Provider value={value}>{children}</FinanceContext.Provider>;
